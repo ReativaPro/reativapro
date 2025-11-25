@@ -8,6 +8,7 @@ type WebhookPayload = {
   email?: string
   checkout_id?: string
   event?: string
+  name?: string
 }
 
 function getSupabaseAdmin(): SupabaseClient {
@@ -22,7 +23,11 @@ function getSupabaseAdmin(): SupabaseClient {
   return createClient(url, serviceKey)
 }
 
-async function findOrCreateUser(supabase: SupabaseClient, email: string) {
+async function findOrCreateUser(
+  supabase: SupabaseClient,
+  email: string,
+  name?: string
+) {
   const { data: existing, error: selectError } = await supabase
     .from("users")
     .select("*")
@@ -39,9 +44,14 @@ async function findOrCreateUser(supabase: SupabaseClient, email: string) {
     return existing.id as string
   }
 
+  const safeName =
+    name && name.trim().length > 0
+      ? name.trim()
+      : email.split("@")[0] // fallback: parte antes do @
+
   const { data: created, error: insertError } = await supabase
     .from("users")
-    .insert({ email })
+    .insert({ email, name: safeName })
     .select()
     .single()
 
@@ -125,6 +135,7 @@ export async function POST(req: NextRequest) {
     const email = body.email
     const checkoutId = body.checkout_id
     const event = body.event
+    const name = body.name
 
     if (!email) {
       console.warn("Webhook sem email, ignorando")
@@ -132,7 +143,7 @@ export async function POST(req: NextRequest) {
     }
 
     const supabase = getSupabaseAdmin()
-    const userId = await findOrCreateUser(supabase, email)
+    const userId = await findOrCreateUser(supabase, email, name)
 
     if (event === "payment_approved") {
       if (!checkoutId) {
