@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     const supabase = getSupabaseAdmin()
 
-    // 1) Verifica se existe user com esse e-mail
+    // 1) Verifica se existe user com esse e-mail na tabela users
     const userRow = await getUserByEmail(supabase, email)
 
     if (!userRow) {
@@ -116,12 +116,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 4) Verifica se já existe user no Auth
+    // 4) Verifica se já existe user no Auth (sem usar 'email' no objeto)
     const { data: authList, error: listError } =
       await supabase.auth.admin.listUsers({
         page: 1,
-        perPage: 1,
-        email,
+        perPage: 100,
       })
 
     if (listError) {
@@ -130,7 +129,9 @@ export async function POST(req: NextRequest) {
     }
 
     const alreadyExists =
-      authList?.users && authList.users.length > 0 ? authList.users[0] : null
+      authList?.users?.find(
+        (u) => u.email?.toLowerCase() === email
+      ) ?? null
 
     if (alreadyExists) {
       console.log("Usuário Auth já existia, apenas retornando ok:", email)
