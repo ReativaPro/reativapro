@@ -1,3 +1,5 @@
+"use client"
+
 import Link from "next/link"
 import { ReactNode } from "react"
 import { usePathname } from "next/navigation"
@@ -58,13 +60,10 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </p>
           </div>
           <div className="text-xs text-slate-400">
-            {/* Placeholder para no futuro mostrar nome do usuário / plano */}
-            {/* Ex: {user?.email} | Plano Mensal */}
+            {/* No futuro: nome do usuário / plano */}
           </div>
         </header>
-        <main className="flex-1 px-4 py-4 md:px-6 md:py-6">
-          {children}
-        </main>
+        <main className="flex-1 px-4 py-4 md:px-6 md:py-6">{children}</main>
       </div>
     </div>
   )
