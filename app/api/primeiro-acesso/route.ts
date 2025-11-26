@@ -29,13 +29,15 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    const normalizedEmail = String(email).toLowerCase().trim()
+
     const supabase = getSupabaseAdmin()
 
     // 1) Verificar se o usuário existe na tabela users
     const { data: userRow, error: userError } = await supabase
       .from("users")
       .select("*")
-      .eq("email", email.toLowerCase())
+      .eq("email", normalizedEmail)
       .maybeSingle()
 
     if (userError) {
@@ -81,10 +83,10 @@ export async function POST(req: NextRequest) {
     }
 
     // 3) Atualizar nome no users, se informado
-    if (name && name.trim().length > 0) {
+    if (name && String(name).trim().length > 0) {
       const { error: updateNameError } = await supabase
         .from("users")
-        .update({ name: name.trim() })
+        .update({ name: String(name).trim() })
         .eq("id", userRow.id)
 
       if (updateNameError) {
@@ -94,21 +96,28 @@ export async function POST(req: NextRequest) {
 
     // 4) Garantir usuário no Supabase Auth com ESSA senha
     //    Se já existir, atualiza senha. Se não existir, cria.
-    const { data: authGetData, error: authGetError } =
-      await supabase.auth.admin.getUserByEmail(email.toLowerCase())
 
-    if (authGetError) {
-      console.error("Erro ao buscar user no Auth:", authGetError)
+    // 4.1 – listar usuários e tentar achar pelo e-mail
+    const { data: listData, error: listError } =
+      await supabase.auth.admin.listUsers()
+
+    if (listError) {
+      console.error("Erro ao listar users no Auth:", listError)
       return NextResponse.json(
         { ok: false, error: "internal_error" },
         { status: 500 }
       )
     }
 
-    if (authGetData?.user) {
+    const existingAuthUser =
+      listData?.users?.find(
+        (u) => u.email?.toLowerCase() === normalizedEmail
+      ) ?? null
+
+    if (existingAuthUser) {
       // Usuário já existe no Auth → atualiza senha
       const { error: updateAuthError } =
-        await supabase.auth.admin.updateUserById(authGetData.user.id, {
+        await supabase.auth.admin.updateUserById(existingAuthUser.id, {
           password,
         })
 
@@ -122,7 +131,7 @@ export async function POST(req: NextRequest) {
     } else {
       // Usuário não existe no Auth → cria com essa senha
       const { error: createAuthError } = await supabase.auth.admin.createUser({
-        email: email.toLowerCase(),
+        email: normalizedEmail,
         password,
         email_confirm: true,
       })
@@ -136,7 +145,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, version: "primeiro-acesso-v2" })
+    return NextResponse.json({ ok: true, version: "primeiro-acesso-v3" })
   } catch (err) {
     console.error("Erro inesperado em /api/primeiro-acesso:", err)
     return NextResponse.json(
