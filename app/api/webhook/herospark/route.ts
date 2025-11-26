@@ -32,13 +32,53 @@ function getSupabaseAdmin(): SupabaseClient {
 }
 
 // -----------------------------------------------------------------------------
+// Parse genérico do body: aceita JSON e x-www-form-urlencoded
+// -----------------------------------------------------------------------------
+async function parseHeroSparkBody(req: NextRequest): Promise<HeroSparkPayload> {
+  const contentType = req.headers.get("content-type") || ""
+
+  // Se for JSON mesmo:
+  if (contentType.includes("application/json")) {
+    try {
+      const json = (await req.json()) as HeroSparkPayload
+      return json
+    } catch (err) {
+      console.error("Falha ao parsear JSON direto:", err)
+      // cai para tentativa de texto/urlencoded
+    }
+  }
+
+  // Fallback: ler como texto (provavelmente x-www-form-urlencoded)
+  const raw = await req.text()
+
+  // Tenta JSON por desencargo
+  if (raw.trim().startsWith("{")) {
+    try {
+      return JSON.parse(raw) as HeroSparkPayload
+    } catch (err) {
+      console.error("Falha ao parsear body como JSON a partir de texto:", err)
+    }
+  }
+
+  // Parse como form-urlencoded: email=...&event=...
+  const params = new URLSearchParams(raw)
+  const obj: HeroSparkPayload = {}
+  params.forEach((value, key) => {
+    obj[key] = value
+  })
+
+  console.log("Body parseado como x-www-form-urlencoded:", obj)
+  return obj
+}
+
+// -----------------------------------------------------------------------------
 // Garante usuário por e-mail usando UPSERT (evita erro 23505 de unique)
 // -----------------------------------------------------------------------------
 async function findOrCreateUser(supabase: SupabaseClient, email: string) {
   const { data, error } = await supabase
     .from("users")
     .upsert(
-      { email }, // usa defaults pra name, phone etc.
+      { email },
       { onConflict: "email" }
     )
     .select()
@@ -126,28 +166,27 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const body = (await req.json()) as HeroSparkPayload
-    console.log("Webhook recebido da HeroSpark:", body)
+    const body = await parseHeroSparkBody(req)
+    console.log("Webhook recebido da HeroSpark (normalizado):", body)
 
     const rawEvent = body.event ?? ""
     const event = String(rawEvent).toLowerCase()
 
-    // Normaliza e-mail
-    const email = body.email?.trim().toLowerCase()
+    const email = body.email?.toString().trim().toLowerCase()
 
-    // Normaliza checkoutId com fallback para campos comuns
     let checkoutId =
-      body.checkout_id || body.transaction_code || body.sale_id || null
+      body.checkout_id ||
+      body.transaction_code ||
+      body.sale_id ||
+      null
 
     if (!checkoutId) {
       console.warn("payment_approved sem checkout_id (provavelmente teste)", {
         body,
       })
-      // fallback só pra não quebrar lógica; não depende de ser único
       checkoutId = `no-checkout-${email || "unknown"}-${Date.now()}`
     }
 
-    // Se não tiver email, não temos como vincular a ninguém → ignora com ok
     if (!email) {
       console.warn("Webhook HeroSpark sem email, ignorando.", { body })
       return NextResponse.json(
@@ -157,13 +196,9 @@ export async function POST(req: NextRequest) {
     }
 
     const supabase = getSupabaseAdmin()
-
-    // Garante usuário
     const userId = await findOrCreateUser(supabase, email)
 
-    // Lidamos apenas com payment_approved (por enquanto)
     if (event === "payment_approved") {
-      // Verifica se já existe assinatura com esse checkout_id
       const { data: existing, error: selectError } = await supabase
         .from("subscriptions")
         .select("*")
@@ -190,7 +225,6 @@ export async function POST(req: NextRequest) {
         await renewSubscription(supabase, existing, checkoutId)
       }
     } else {
-      // Outros eventos: só loga e responde ok
       console.log("Evento HeroSpark ignorado (não suportado ainda):", event)
     }
 
