@@ -4,66 +4,57 @@ export const dynamic = "force-dynamic"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient, SupabaseClient } from "@supabase/supabase-js"
 
-type WebhookPayload = {
+type HeroSparkPayload = {
+  event?: string
   email?: string
   checkout_id?: string
-  event?: string
-  name?: string
+  transaction_code?: string
+  sale_id?: string
+  [key: string]: any
 }
 
+// -----------------------------------------------------------------------------
+// Supabase admin client
+// -----------------------------------------------------------------------------
 function getSupabaseAdmin(): SupabaseClient {
   const url = process.env.SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_KEY
 
   if (!url || !serviceKey) {
-    console.error("Supabase env vars missing", { url: !!url, serviceKey: !!serviceKey })
-    throw new Error("SUPABASE_URL or SUPABASE_SERVICE_KEY missing")
+    console.error("SUPABASE_URL ou SUPABASE_SERVICE_KEY ausentes nas env vars", {
+      hasUrl: !!url,
+      hasServiceKey: !!serviceKey,
+    })
+    throw new Error("Supabase env vars missing")
   }
 
   return createClient(url, serviceKey)
 }
 
-async function findOrCreateUser(
-  supabase: SupabaseClient,
-  email: string,
-  name?: string
-) {
-  const { data: existing, error: selectError } = await supabase
+// -----------------------------------------------------------------------------
+// Garante usuário por e-mail usando UPSERT (evita erro 23505 de unique)
+// -----------------------------------------------------------------------------
+async function findOrCreateUser(supabase: SupabaseClient, email: string) {
+  const { data, error } = await supabase
     .from("users")
-    .select("*")
-    .eq("email", email)
-    .maybeSingle()
-
-  if (selectError) {
-    console.error("Erro ao buscar usuário:", selectError)
-    throw selectError
-  }
-
-  if (existing) {
-    console.log("Usuário já existe:", existing.id)
-    return existing.id as string
-  }
-
-  const safeName =
-    name && name.trim().length > 0
-      ? name.trim()
-      : email.split("@")[0] // fallback: parte antes do @
-
-  const { data: created, error: insertError } = await supabase
-    .from("users")
-    .insert({ email, name: safeName })
+    .upsert(
+      { email }, // usa defaults pra name, phone etc.
+      { onConflict: "email" }
+    )
     .select()
     .single()
 
-  if (insertError || !created) {
-    console.error("Erro ao criar usuário:", insertError)
-    throw insertError
+  if (error) {
+    console.error("Erro em findOrCreateUser (upsert):", error)
+    throw error
   }
 
-  console.log("Usuário criado:", created.id)
-  return created.id as string
+  return data.id as string
 }
 
+// -----------------------------------------------------------------------------
+// Cria assinatura inicial (+30 dias)
+// -----------------------------------------------------------------------------
 async function activateSubscription(
   supabase: SupabaseClient,
   userId: string,
@@ -84,15 +75,20 @@ async function activateSubscription(
   })
 
   if (error) {
-    console.error("Erro ao ativar assinatura:", error)
+    console.error("Erro ao criar assinatura em subscriptions:", error)
     throw error
   }
-
-  console.log("Assinatura criada para user_id:", userId, "checkout:", checkoutId)
 }
 
-async function renewSubscription(supabase: SupabaseClient, sub: any) {
-  const expires = new Date(sub.expires_at)
+// -----------------------------------------------------------------------------
+// Renova assinatura existente (+30 dias)
+// -----------------------------------------------------------------------------
+async function renewSubscription(
+  supabase: SupabaseClient,
+  sub: any,
+  checkoutId: string
+) {
+  const expires = new Date(sub.expires_at ?? new Date().toISOString())
   expires.setDate(expires.getDate() + 30)
 
   const { error } = await supabase
@@ -100,75 +96,102 @@ async function renewSubscription(supabase: SupabaseClient, sub: any) {
     .update({
       expires_at: expires.toISOString(),
       last_payment_status: "approved",
+      checkout_id: checkoutId || sub.checkout_id,
     })
     .eq("id", sub.id)
 
   if (error) {
-    console.error("Erro ao renovar assinatura:", error)
+    console.error("Erro ao renovar assinatura em subscriptions:", error)
     throw error
   }
-
-  console.log("Assinatura renovada, id:", sub.id)
 }
 
+// -----------------------------------------------------------------------------
+// Handler principal do webhook
+// -----------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
     const secret = process.env.HEROSPARK_WEBHOOK_SECRET
-    const received = req.headers.get("x-herospark-secret")
+    const received =
+      req.headers.get("x-herospark-secret") ??
+      req.headers.get("X-Herospark-Secret")
 
-    if (!secret) {
-      console.error("HEROSPARK_WEBHOOK_SECRET não configurado")
+    if (!secret || received !== secret) {
+      console.warn("Webhook HeroSpark recusado: segredo inválido", {
+        received,
+      })
       return NextResponse.json(
-        { ok: false, error: "server_misconfigured" },
-        { status: 500 }
+        { ok: false, error: "unauthorized", version: "v2" },
+        { status: 401 }
       )
     }
 
-    if (received !== secret) {
-      console.warn("Webhook recusado: segredo inválido")
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
-    }
-
-    const body = (await req.json()) as WebhookPayload
+    const body = (await req.json()) as HeroSparkPayload
     console.log("Webhook recebido da HeroSpark:", body)
 
-    const email = body.email
-    const checkoutId = body.checkout_id
-    const event = body.event
-    const name = body.name
+    const rawEvent = body.event ?? ""
+    const event = String(rawEvent).toLowerCase()
 
+    // Normaliza e-mail
+    const email = body.email?.trim().toLowerCase()
+
+    // Normaliza checkoutId com fallback para campos comuns
+    let checkoutId =
+      body.checkout_id || body.transaction_code || body.sale_id || null
+
+    if (!checkoutId) {
+      console.warn("payment_approved sem checkout_id (provavelmente teste)", {
+        body,
+      })
+      // fallback só pra não quebrar lógica; não depende de ser único
+      checkoutId = `no-checkout-${email || "unknown"}-${Date.now()}`
+    }
+
+    // Se não tiver email, não temos como vincular a ninguém → ignora com ok
     if (!email) {
-      console.warn("Webhook sem email, ignorando")
-      return NextResponse.json({ ok: true, skipped: "no_email", version: "v2" })
+      console.warn("Webhook HeroSpark sem email, ignorando.", { body })
+      return NextResponse.json(
+        { ok: true, ignored: true, reason: "missing_email", version: "v2" },
+        { status: 200 }
+      )
     }
 
     const supabase = getSupabaseAdmin()
-    const userId = await findOrCreateUser(supabase, email, name)
 
+    // Garante usuário
+    const userId = await findOrCreateUser(supabase, email)
+
+    // Lidamos apenas com payment_approved (por enquanto)
     if (event === "payment_approved") {
-      if (!checkoutId) {
-        console.warn("payment_approved sem checkout_id")
-        return NextResponse.json({ ok: true, warning: "no_checkout_id", version: "v2" })
-      }
-
-      const { data: existing, error } = await supabase
+      // Verifica se já existe assinatura com esse checkout_id
+      const { data: existing, error: selectError } = await supabase
         .from("subscriptions")
         .select("*")
         .eq("checkout_id", checkoutId)
         .maybeSingle()
 
-      if (error) {
-        console.error("Erro ao buscar assinatura:", error)
-        throw error
+      if (selectError) {
+        console.error("Erro ao buscar assinatura por checkout_id:", selectError)
+        throw selectError
       }
 
       if (!existing) {
+        console.log("Criando nova assinatura para usuário", {
+          userId,
+          email,
+          checkoutId,
+        })
         await activateSubscription(supabase, userId, checkoutId)
       } else {
-        await renewSubscription(supabase, existing)
+        console.log("Renovando assinatura existente", {
+          subscriptionId: existing.id,
+          checkoutId,
+        })
+        await renewSubscription(supabase, existing, checkoutId)
       }
     } else {
-      console.log("Evento ignorado (não é payment_approved):", event)
+      // Outros eventos: só loga e responde ok
+      console.log("Evento HeroSpark ignorado (não suportado ainda):", event)
     }
 
     return NextResponse.json({ ok: true, version: "v2" })
