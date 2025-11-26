@@ -2,104 +2,61 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 import { NextRequest, NextResponse } from "next/server"
-import { createClient, SupabaseClient } from "@supabase/supabase-js"
+import { createClient } from "@supabase/supabase-js"
 
-type HeroSparkPayload = {
-  event?: string
-  email?: string
-  checkout_id?: string
-  transaction_code?: string
-  sale_id?: string
-  [key: string]: any
+// -----------------------------------------------------------------------------
+// SUPABASE ADMIN
+// -----------------------------------------------------------------------------
+function getSupabaseAdmin() {
+  return createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!
+  )
 }
 
 // -----------------------------------------------------------------------------
-// Supabase admin client
+// PARSE UNIVERSAL DO BODY (JSON + form-urlencoded)
 // -----------------------------------------------------------------------------
-function getSupabaseAdmin(): SupabaseClient {
-  const url = process.env.SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY
+async function parseBody(req: NextRequest) {
+  const raw = await req.text() // LÊ APENAS UMA VEZ
 
-  if (!url || !serviceKey) {
-    console.error("SUPABASE_URL ou SUPABASE_SERVICE_KEY ausentes nas env vars", {
-      hasUrl: !!url,
-      hasServiceKey: !!serviceKey,
-    })
-    throw new Error("Supabase env vars missing")
-  }
-
-  return createClient(url, serviceKey)
-}
-
-// -----------------------------------------------------------------------------
-// Parse genérico do body: aceita JSON e x-www-form-urlencoded
-// -----------------------------------------------------------------------------
-async function parseHeroSparkBody(req: NextRequest): Promise<HeroSparkPayload> {
-  const contentType = req.headers.get("content-type") || ""
-
-  // Se for JSON mesmo:
-  if (contentType.includes("application/json")) {
+  // Tentar JSON
+  if (raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
     try {
-      const json = (await req.json()) as HeroSparkPayload
-      return json
-    } catch (err) {
-      console.error("Falha ao parsear JSON direto:", err)
-      // cai para tentativa de texto/urlencoded
+      return JSON.parse(raw)
+    } catch {
+      // continua para parser urlencoded
     }
   }
 
-  // Fallback: ler como texto (provavelmente x-www-form-urlencoded)
-  const raw = await req.text()
-
-  // Tenta JSON por desencargo
-  if (raw.trim().startsWith("{")) {
-    try {
-      return JSON.parse(raw) as HeroSparkPayload
-    } catch (err) {
-      console.error("Falha ao parsear body como JSON a partir de texto:", err)
-    }
-  }
-
-  // Parse como form-urlencoded: email=...&event=...
+  // Tentar form-urlencoded
   const params = new URLSearchParams(raw)
-  const obj: HeroSparkPayload = {}
+  const obj: any = {}
   params.forEach((value, key) => {
     obj[key] = value
   })
 
-  console.log("Body parseado como x-www-form-urlencoded:", obj)
   return obj
 }
 
 // -----------------------------------------------------------------------------
-// Garante usuário por e-mail usando UPSERT (evita erro 23505 de unique)
+// UP SERT USER
 // -----------------------------------------------------------------------------
-async function findOrCreateUser(supabase: SupabaseClient, email: string) {
+async function findOrCreateUser(supabase: any, email: string) {
   const { data, error } = await supabase
     .from("users")
-    .upsert(
-      { email },
-      { onConflict: "email" }
-    )
+    .upsert({ email }, { onConflict: "email" })
     .select()
     .single()
 
-  if (error) {
-    console.error("Erro em findOrCreateUser (upsert):", error)
-    throw error
-  }
-
-  return data.id as string
+  if (error) throw error
+  return data.id
 }
 
 // -----------------------------------------------------------------------------
-// Cria assinatura inicial (+30 dias)
+// CRIAR ASSINATURA
 // -----------------------------------------------------------------------------
-async function activateSubscription(
-  supabase: SupabaseClient,
-  userId: string,
-  checkoutId: string
-) {
+async function activateSubscription(supabase: any, userId: string, checkoutId: string) {
   const now = new Date()
   const expires = new Date()
   expires.setDate(now.getDate() + 30)
@@ -114,21 +71,14 @@ async function activateSubscription(
     last_payment_status: "approved",
   })
 
-  if (error) {
-    console.error("Erro ao criar assinatura em subscriptions:", error)
-    throw error
-  }
+  if (error) throw error
 }
 
 // -----------------------------------------------------------------------------
-// Renova assinatura existente (+30 dias)
+// RENOVAR ASSINATURA
 // -----------------------------------------------------------------------------
-async function renewSubscription(
-  supabase: SupabaseClient,
-  sub: any,
-  checkoutId: string
-) {
-  const expires = new Date(sub.expires_at ?? new Date().toISOString())
+async function renewSubscription(supabase: any, sub: any, checkoutId: string) {
+  const expires = new Date(sub.expires_at)
   expires.setDate(expires.getDate() + 30)
 
   const { error } = await supabase
@@ -136,103 +86,68 @@ async function renewSubscription(
     .update({
       expires_at: expires.toISOString(),
       last_payment_status: "approved",
-      checkout_id: checkoutId || sub.checkout_id,
+      checkout_id: checkoutId,
     })
     .eq("id", sub.id)
 
-  if (error) {
-    console.error("Erro ao renovar assinatura em subscriptions:", error)
-    throw error
-  }
+  if (error) throw error
 }
 
 // -----------------------------------------------------------------------------
-// Handler principal do webhook
+// WEBHOOK HANDLER
 // -----------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   try {
+    // Validar segredo
     const secret = process.env.HEROSPARK_WEBHOOK_SECRET
-    const received =
-      req.headers.get("x-herospark-secret") ??
-      req.headers.get("X-Herospark-Secret")
-
+    const received = req.headers.get("x-herospark-secret")
     if (!secret || received !== secret) {
-      console.warn("Webhook HeroSpark recusado: segredo inválido", {
-        received,
-      })
-      return NextResponse.json(
-        { ok: false, error: "unauthorized", version: "v2" },
-        { status: 401 }
-      )
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 })
     }
 
-    const body = await parseHeroSparkBody(req)
-    console.log("Webhook recebido da HeroSpark (normalizado):", body)
+    // Body universal
+    const body = await parseBody(req)
+    console.log("Webhook HeroSpark recebido:", body)
 
-    const rawEvent = body.event ?? ""
-    const event = String(rawEvent).toLowerCase()
-
-    const email = body.email?.toString().trim().toLowerCase()
-
+    const event = (body.event || "").toLowerCase()
+    const email = body.email?.toLowerCase()
     let checkoutId =
       body.checkout_id ||
       body.transaction_code ||
       body.sale_id ||
-      null
-
-    if (!checkoutId) {
-      console.warn("payment_approved sem checkout_id (provavelmente teste)", {
-        body,
-      })
-      checkoutId = `no-checkout-${email || "unknown"}-${Date.now()}`
-    }
+      `no-checkout-${Date.now()}`
 
     if (!email) {
-      console.warn("Webhook HeroSpark sem email, ignorando.", { body })
-      return NextResponse.json(
-        { ok: true, ignored: true, reason: "missing_email", version: "v2" },
-        { status: 200 }
-      )
+      console.warn("Webhook sem email → ignorado")
+      return NextResponse.json({ ok: true, ignored: true })
     }
 
     const supabase = getSupabaseAdmin()
     const userId = await findOrCreateUser(supabase, email)
 
     if (event === "payment_approved") {
-      const { data: existing, error: selectError } = await supabase
+      const { data: existing } = await supabase
         .from("subscriptions")
         .select("*")
         .eq("checkout_id", checkoutId)
         .maybeSingle()
 
-      if (selectError) {
-        console.error("Erro ao buscar assinatura por checkout_id:", selectError)
-        throw selectError
-      }
-
       if (!existing) {
-        console.log("Criando nova assinatura para usuário", {
-          userId,
-          email,
-          checkoutId,
-        })
+        console.log("Criando nova assinatura:", checkoutId)
         await activateSubscription(supabase, userId, checkoutId)
       } else {
-        console.log("Renovando assinatura existente", {
-          subscriptionId: existing.id,
-          checkoutId,
-        })
+        console.log("Renovando assinatura:", checkoutId)
         await renewSubscription(supabase, existing, checkoutId)
       }
     } else {
-      console.log("Evento HeroSpark ignorado (não suportado ainda):", event)
+      console.log("Evento ignorado:", event)
     }
 
-    return NextResponse.json({ ok: true, version: "v2" })
+    return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("Erro inesperado no webhook HeroSpark:", err)
     return NextResponse.json(
-      { ok: false, error: "internal_error", version: "v2" },
+      { ok: false, error: "internal_error" },
       { status: 500 }
     )
   }
