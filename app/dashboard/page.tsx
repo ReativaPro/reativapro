@@ -29,10 +29,11 @@ export default function DashboardHomePage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<AssinaturaResponse | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [totalConversas, setTotalConversas] = useState<number | null>(null)
-  const [loadingResumo,  setLoadingResumo] = useState(false)
 
-useEffect(() => {
+  const [totalConversas, setTotalConversas] = useState<number | null>(null)
+  const [loadingResumo, setLoadingResumo] = useState(false)
+
+  useEffect(() => {
     async function fetchResumo() {
       try {
         setLoadingResumo(true)
@@ -108,8 +109,9 @@ useEffect(() => {
     if (result.status === "pending") {
       return (
         <p className="text-xs text-amber-300">
-          Assinatura está em estado <span className="font-semibold">pendente</span>.
-          Aguarde a confirmação do pagamento na HeroSpark.
+          Assinatura está em estado{" "}
+          <span className="font-semibold">pendente</span>. Aguarde a
+          confirmação do pagamento na HeroSpark.
         </p>
       )
     }
@@ -176,10 +178,13 @@ useEffect(() => {
         {/* Card 1 - Análise de conversas */}
         <div className="border border-slate-800 rounded-2xl p-4 bg-slate-900/40">
           <h3 className="text-sm font-semibold mb-1">Análise de conversas</h3>
-          <p className="text-xs text-slate-400 mb-3">
-            Envie conversas exportadas do WhatsApp (.txt) e veja a classificação
-            automática de intenção do cliente, cor (verde/amarelo/vermelho/cinza)
-            e mensagem sugerida para recuperar o lead.
+          <p className="text-xs text-slate-400 mb-2">
+            Envie conversas exportadas do WhatsApp (.txt) e veja a
+            classificação automática de intenção do cliente, cor
+            (verde/amarelo/vermelho/cinza) e mensagem sugerida para recuperar o
+            lead.
+          </p>
+
           {loadingResumo ? (
             <p className="text-[11px] text-slate-500 mb-2">
               Carregando resumo…
@@ -195,6 +200,7 @@ useEffect(() => {
                   } até agora.`}
             </p>
           )}
+
           <Link
             href="/dashboard/conversas"
             className="inline-flex items-center text-xs font-semibold text-emerald-300 hover:text-emerald-200"
@@ -235,7 +241,7 @@ useEffect(() => {
           {renderStatus()}
         </div>
 
-        {/* Card 3 - Configurações (placeholder ainda) */}
+        {/* Card 3 - Configurações (placeholder) */}
         <div className="border border-slate-800 rounded-2xl p-4 bg-slate-900/40">
           <h3 className="text-sm font-semibold mb-1">Configurações</h3>
           <p className="text-xs text-slate-400 mb-3">
