@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 
 type SubscriptionStatus =
@@ -29,6 +29,27 @@ export default function DashboardHomePage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<AssinaturaResponse | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [totalConversas, setTotalConversas] = useState<number | null>(null)
+  const [loadingResumo,  setLoadingResumo] = useState(false)
+
+useEffect(() => {
+    async function fetchResumo() {
+      try {
+        setLoadingResumo(true)
+        const res = await fetch("/api/dashboard/resumo")
+        const data = await res.json()
+        if (data.ok) {
+          setTotalConversas(data.totalConversations ?? 0)
+        }
+      } catch (err) {
+        console.error("Erro ao carregar resumo do dashboard:", err)
+      } finally {
+        setLoadingResumo(false)
+      }
+    }
+
+    fetchResumo()
+  }, [])
 
   async function handleCheckAssinatura(e: React.FormEvent) {
     e.preventDefault()
@@ -159,7 +180,21 @@ export default function DashboardHomePage() {
             Envie conversas exportadas do WhatsApp (.txt) e veja a classificação
             automática de intenção do cliente, cor (verde/amarelo/vermelho/cinza)
             e mensagem sugerida para recuperar o lead.
-          </p>
+          {loadingResumo ? (
+            <p className="text-[11px] text-slate-500 mb-2">
+              Carregando resumo…
+            </p>
+          ) : (
+            <p className="text-[11px] text-slate-500 mb-2">
+              {totalConversas === null
+                ? "Ainda não foi possível carregar o resumo."
+                : totalConversas === 0
+                ? "Nenhuma conversa analisada ainda."
+                : `Você já analisou ${totalConversas} conversa${
+                    totalConversas === 1 ? "" : "s"
+                  } até agora.`}
+            </p>
+          )}
           <Link
             href="/dashboard/conversas"
             className="inline-flex items-center text-xs font-semibold text-emerald-300 hover:text-emerald-200"
