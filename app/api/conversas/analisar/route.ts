@@ -1,3 +1,6 @@
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
+
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
@@ -17,9 +20,16 @@ async function analyseWithGroq(text: string, userName: string) {
         {
           role: "system",
           content: `
-Você é uma IA especialista em vendas e comportamento humano.
-Receberá uma conversa do WhatsApp exportada em .txt.
-Sua tarefa é:
+Você é uma IA especialista em vendas e análise comportamental.
+Sua missão é analisar conversas de WhatsApp e retornar:
+
+{
+  "cor": "green | yellow | red | gray",
+  "motivo": "Explicação curta da intenção",
+  "mensagem": "Mensagem perfeita para recuperar o cliente"
+}
+
+REGRAS: 
 
 REGRAS PARA INTENÇÃO:
 - altíssima  → cliente muito engajado, respondeu rápido, fez perguntas claras, demonstrou interesse forte
@@ -28,29 +38,30 @@ REGRAS PARA INTENÇÃO:
 - baixa      → cliente respondeu pouco, muitas quebras na conversa, sinais de desinteresse
 - baixíssima → cliente praticamente ignorou, recusou claramente, ou encerrou o assunto
 
-1) Regras  pra cores:
+REGRAS IMPORTANTES:
+
 - GREEN → intenção alta, respostas rápidas, perguntas objetivas, abertura para oferta (Prioridade leve)
 - YELLOW → intenção média, cliente interessado mas hesitante (Prioridade Mediana)
 - RED → cliente rejeitando, sumindo, dando desculpas fortes (Máxima prioridade)
 - GRAY → cliente não demonstra intenção clara, conversa casual ou fria ou apenas "curioso"
 
-2) Explicar a intenção em 1 frase.
+REGRAS PARA AS CORES: 
 
-3) para cada cor a mensagem sugerida deve ter a estratégia psicologica de vendas pra cada cor.
+para cada cor a mensagem sugerida deve ter a estratégia psicologica de vendas pra cada cor.
 Exemplo: 
 
-Cor GREEN = mensagem sugerida de acordo com o contexto, aplicando estrátegias leves mas bem convencentes.
-Cor YELLOW = mensagem sugerida de acordo com o contexto, aplicando estrátegias boas e fortes e bastante convencentes.       
-Cor RED = mensagem sugerida de acordo com o contexto, aplicando estrátegias MUITO FORTES E MUITO CONVENCENTES, Pode usar as melhores estrátegias de reativamento de cliente/Vendas. Dê o Máximo de prioridade para os clientes que forem classificado com essa cor.
-Cor Gray = mensagem sugerida de acordo com o contexto, aplicando estrátegias muito leves e que tenha um pouco de chance de conseguir convencer.
+- Cor GREEN = mensagem sugerida de acordo com o contexto, aplicando estrátegias leves mas bem convencentes.
+- Cor YELLOW = mensagem sugerida de acordo com o contexto, aplicando estrátegias boas e fortes e bastante convencentes.       
+- Cor RED = mensagem sugerida de acordo com o contexto, aplicando estrátegias MUITO FORTES E MUITO CONVENCENTES, Pode usar as melhores estrátegias de reativamento de cliente/Vendas. Dê o Máximo de prioridade para os clientes que forem classificado com essa cor.
+- Cor Gray = mensagem sugerida de acordo com o contexto, aplicando estrátegias muito leves e que tenha um pouco de chance de conseguir convencer.
 
-4) O resumo deve ser:
+O resumo deve ser:
 - objetivo
 - técnico
 - direto ao ponto
 - focado na jornada do cliente (interesse, objeções, recuos, comportamento)
 
-5) A mensagem sugerida deve:
+A mensagem sugerida deve:
 - usar linguagem humana e natural
 - parecer escrita por um vendedor profissional experiente
 - criar conexão e mostrar que o cliente foi ouvido
@@ -58,9 +69,9 @@ Cor Gray = mensagem sugerida de acordo com o contexto, aplicando estrátegias mu
 - respeitar o contexto da conversa (não repetir o que já foi dito de forma chata)
 - pode conter emojis legais e que combine com a conversa ou com a mensagem sugerida.
 
-
-6) Gerar mensagem perfeita para recuperar esse cliente.
-            `,
+NÃO use markdown, não use asteriscos.
+Retorne SOMENTE o JSON.
+          `,
         },
         {
           role: "user",
@@ -73,12 +84,12 @@ Cor Gray = mensagem sugerida de acordo com o contexto, aplicando estrátegias mu
 
   const json = await response.json()
 
-  if (json.error) {
-    console.error("[ReativaPro] ERRO DA GROQ:", json.error)
-    throw new Error(json.error.message || "Erro na IA")
+  if (!response.ok || json.error) {
+    console.error("[ReativaPro][GROQ] Erro:", json.error || json)
+    throw new Error(json.error?.message || "Erro na IA da Groq")
   }
 
-  return json.choices[0].message.content
+  return json.choices?.[0]?.message?.content || "{}"
 }
 
 // ---------- SUPABASE ----------
@@ -96,12 +107,6 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData()
 
     const file = formData.get("file") as File
-    const userName = export async function POST(req: NextRequest) {
-  try {
-    const supabase = getSupabase()
-    const formData = await req.formData()
-
-    const file = formData.get("file") as File
     const userName = (formData.get("userName") as string)?.trim() || "Eu"
     const userId = formData.get("userId") as string
 
@@ -114,24 +119,27 @@ export async function POST(req: NextRequest) {
 
     const text = await file.text()
 
-    // --- Chama a IA da Groq ---
-    const result = await analyseWithGroq(text, userName)
+    // --- Chamada IA ---
+    const analysis = await analyseWithGroq(text, userName)
 
-    // --- Armazena ---
-    const { error: insertError } = await supabase
+    // --- Salvar no Supabase ---
+    const { error: dbError } = await supabase
       .from("whatsapp_conversations")
       .insert({
         user_id: userId,
         filename: file.name,
         content: text,
-        analysis: result,
+        analysis,
       })
 
-    if (insertError) throw insertError
+    if (dbError) {
+      console.error("[ReativaPro] Erro DB:", dbError)
+      throw dbError
+    }
 
-    return NextResponse.json({ ok: true, analysis: result })
+    return NextResponse.json({ ok: true, analysis })
   } catch (err: any) {
-    console.error("[ReativaPro] Erro geral:", err.message || err)
+    console.error("[ReativaPro] ERRO GERAL:", err)
     return NextResponse.json(
       { error: "Erro ao processar conversa" },
       { status: 500 }
