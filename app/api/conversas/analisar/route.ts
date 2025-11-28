@@ -105,7 +105,13 @@ Exemplo:
 - "Cor red" = mensagem sugerida de acordo com o contexto, aplicando estrátegias MUITO FORTES E MUITO CONVENCENTES, Pode usar as melhores estrátegias de reativamento de cliente/Vendas (mas sem parecer apelativo). Dê o Máximo de prioridade de qualidade de respostas para os clientes que forem classificado com essa cor.
 "Cor gray" = mensagem sugerida de acordo com o contexto, aplicando estrátegias muito leves e que tenha um pouco de chance de conseguir convencer.
 
-(use estrátegias de vendas nas mensagem sugerida)
+(se adapte a forma de conversa do cliente, exemplo: se o cliente for gentil a mensagem sugerida tem que ser gentil, se o cliente for formal a mensagem sugerida tem que ser formal e assim vai.)  
+(pode conter emojis amigáveis/que combinem nas mensagem sugeridas.) 
+(use estrátegias de vendas nas mensagem sugerida.)
+(pode usar estrátegias psicologicas que dê muita vontade do cliente responder.)
+(NUNCA FAÇA UMA MENSAGEM SUGERIDA COM PALAVRAS DE BAIXO CALÃO INDEPENDENTEMENTE DO CONTEXTO.)
+(seja gentil com qualquer cliente.)
+(use as Melhores estrátegias de vendas do mundo.)
 
 Responda SOMENTE com o JSON, sem comentários, sem texto fora do JSON.
 `
