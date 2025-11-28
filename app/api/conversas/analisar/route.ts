@@ -2,13 +2,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 import { NextRequest, NextResponse } from "next/server"
-import OpenAI from "openai"
 import { createClient } from "@supabase/supabase-js"
-
-// ---------- OPENAI ----------
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-})
 
 // ---------- SUPABASE ADMIN ----------
 function getSupabaseAdmin() {
@@ -66,7 +60,6 @@ function parseWhatsappConversation(raw: string, myName: string): string {
     if (!line) continue
 
     // Ignora mensagens de sistema tipo:
-    // "As mensagens e ligações são protegidas..."
     if (
       line.includes("As mensagens e ligações são protegidas") ||
       line.includes("As mensagens e chamadas são protegidas") ||
@@ -131,7 +124,7 @@ export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
     const file = formData.get("file") as File | null
-    const myName = String(formData.get("myName") ?? "").trim()
+    const meuNome = String(formData.get("meuNome") ?? "").trim()
 
     if (!file) {
       return NextResponse.json(
@@ -141,17 +134,26 @@ export async function POST(req: NextRequest) {
     }
 
     const originalText = await file.text()
+    const conversationText = parseWhatsappConversation(
+      originalText,
+      meuNome || "Você"
+    )
 
-    // 🔥 Parser inteligente de WhatsApp
-    const conversationText = parseWhatsappConversation(originalText, myName)
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) {
+      console.error("[ReativaPro] OPENAI_API_KEY não configurada.")
+      return NextResponse.json(
+        { ok: false, error: "missing_openai_key" },
+        { status: 500 }
+      )
+    }
 
     const prompt = `
 Você é um especialista em análise de conversas de WhatsApp focado em vendas,
 copywriting e comportamento do consumidor.
 
-A conversa abaixo foi exportada do WhatsApp.
-A pessoa chamada "MEU_NOME" é o vendedor.
-As mensagens marcadas como "CLIENTE" são do potencial comprador.
+A conversa abaixo foi normalizada. As mensagens "MEU_NOME" são do vendedor.
+As mensagens "CLIENTE" são do potencial comprador.
 
 Você deve analisar a conversa e retornar EXATAMENTE o seguinte JSON:
 
@@ -169,13 +171,13 @@ REGRAS PARA INTENÇÃO:
 - baixa      → cliente respondeu pouco, muitas quebras na conversa, sinais de desinteresse
 - baixíssima → cliente praticamente ignorou, recusou claramente, ou encerrou o assunto
 
-REGRAS IMPORTANTES:
+REGRAS PARA COR:
+- GREEN  → alta ou altíssima intenção, alta chance de reativar com uma boa mensagem
+- YELLOW → intenção média, precisa de cuidado na abordagem
+- RED    → baixa ou baixíssima intenção, cliente rejeitando ou se afastando
+- GRAY   → não há sinais claros de intenção de compra (turista, curioso, conversa descontextualizada)
 
-- GREEN → intenção alta, respostas rápidas, perguntas objetivas, abertura para oferta (Prioridade leve)
-- YELLOW → intenção média, cliente interessado mas hesitante (Prioridade Mediana)
-- RED → cliente rejeitando, sumindo, dando desculpas fortes (Máxima prioridade)
-- GRAY → cliente não demonstra intenção clara, conversa casual ou fria ou apenas "curioso"
-
+REGRA DAS RESPOSTAS:
 para cada cor a mensagem sugerida deve ter a estratégia psicologica de vendas pra cada cor.
 Exemplo: 
 
@@ -199,28 +201,48 @@ A mensagem sugerida deve:
 - criar conexão e mostrar que o cliente foi ouvido
 - mover o cliente para uma próxima ação clara (responder, marcar horário, tomar decisão)
 - respeitar o contexto da conversa (não repetir o que já foi dito de forma chata)
-- pode conter emojis legais e que combine com a conversa ou com a mensagem sugerida.
 
 NÃO inclua comentários, markdown, explicações ou texto fora do JSON.
 Apenas retorne o JSON puro.
 
-CONVERSA:
+CONVERSA NORMALIZADA:
 
 ${conversationText}
 `.trim()
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1",
-      temperature: 0.4,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
+    const response = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
-      ],
-    })
+        body: JSON.stringify({
+          model: "gpt-4.1",
+          temperature: 0.4,
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+        }),
+      }
+    )
 
-    const raw = completion.choices[0].message.content?.trim() ?? "{}"
+    if (!response.ok) {
+      const text = await response.text()
+      console.error("[ReativaPro] Erro da OpenAI:", text)
+      return NextResponse.json(
+        { ok: false, error: "openai_error" },
+        { status: 500 }
+      )
+    }
+
+    const data = (await response.json()) as any
+    const rawContent =
+      data.choices?.[0]?.message?.content?.trim() ?? "{}"
 
     let parsed: {
       summary?: string
@@ -230,19 +252,16 @@ ${conversationText}
     }
 
     try {
-      parsed = JSON.parse(raw)
+      parsed = JSON.parse(rawContent)
     } catch (jsonError) {
       console.error(
         "[ReativaPro] Erro ao fazer JSON.parse da resposta da IA:",
         jsonError,
         "Resposta bruta:",
-        raw
+        rawContent
       )
       return NextResponse.json(
-        {
-          ok: false,
-          error: "invalid_ai_response",
-        },
+        { ok: false, error: "invalid_ai_response" },
         { status: 500 }
       )
     }
@@ -260,13 +279,12 @@ ${conversationText}
           .from("whatsapp_conversations")
           .insert({
             file_name: file.name,
-            seller_name: myName || null,
-            original_text: originalText,
-            normalized_text: conversationText,
-            ai_summary: summary,
-            ai_intent_level: intentLevel,
-            ai_color: color,
-            ai_suggested_message: suggestedMessage,
+            title: file.name,
+            summary,
+            intent_level: intentLevel,
+            color,
+            suggested_message: suggestedMessage,
+            raw_text: originalText,
           })
 
         if (dbError) {
@@ -287,21 +305,19 @@ ${conversationText}
     // ---------- RESPOSTA PARA O FRONT ----------
     return NextResponse.json({
       ok: true,
-      result: {
-        summary,
-        intentLevel,
-        color,
-        suggestedMessage,
-      },
-      version: "analisar-v2-gpt4.1",
+      summary,
+      intentLevel,
+      color,
+      suggestedMessage,
+      version: "analisar-v2-gpt4.1-fetch",
     })
   } catch (err) {
-    console.error("[ReativaPro] Erro inesperado na rota /api/conversas/analisar:", err)
+    console.error(
+      "[ReativaPro] Erro inesperado na rota /api/conversas/analisar:",
+      err
+    )
     return NextResponse.json(
-      {
-        ok: false,
-        error: "internal_error",
-      },
+      { ok: false, error: "internal_error" },
       { status: 500 }
     )
   }
